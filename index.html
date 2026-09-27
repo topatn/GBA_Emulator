@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PokéAdvance • Web GBA Emulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@400;500;600;700;800&family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Header Bar -->
+    <header class="top-nav">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-2.08.8-3.97 2.1-5.39L17.39 17.9C15.97 19.2 14.08 20 12 20zm6.9-3.61L7.61 5.1C8.92 4.1 10.39 3.5 12 3.5c4.69 0 8.5 3.81 8.5 8.5 0 1.61-.6 3.08-1.6 4.39z"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">POKÉADVANCE</span>
+          <span class="brand-subtitle">mGBA WebAssembly • 240×160 Native</span>
+        </div>
+      </div>
+
+      <div class="header-status-strip">
+        <!-- Save Folder Status Pill -->
+        <button id="folder-status-btn" class="status-pill folder-pill disconnected" title="Click to choose local saves directory">
+          <span class="status-dot"></span>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+          </svg>
+          <span id="folder-status-label" class="pill-text">No Save Folder (Click to set)</span>
+        </button>
+
+        <!-- FPS Display Pill -->
+        <div class="status-pill fps-pill" title="Emulation frames per second">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+            <path d="M7 2v11h3v9l7-12h-4l4-8z"/>
+          </svg>
+          <span id="fps-counter" class="pill-text font-mono">0.0 FPS</span>
+        </div>
+
+        <!-- Audio & Mute Pill -->
+        <div class="audio-control-group">
+          <button id="mute-toggle-btn" class="icon-btn" title="Toggle Sound (Mute/Unmute)">
+            <svg id="volume-icon-on" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+              <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+            </svg>
+            <svg id="volume-icon-off" class="hidden" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+              <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+            </svg>
+          </button>
+          <input type="range" id="volume-slider" min="0" max="100" value="100" class="volume-slider" title="Volume slider">
+        </div>
+      </div>
+    </header>
+
+    <!-- Browser Support Warning Banner (if File System Access API is unsupported) -->
+    <div id="fsa-warning-banner" class="warning-banner hidden">
+      <div class="banner-content">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+        </svg>
+        <span>
+          <strong>Local Folder Saves Notice:</strong> Your current browser (e.g. Firefox) does not support the File System Access API. 
+          Use a Chromium browser (Chrome, Edge, Brave, Opera) to automatically save directly into a folder on your computer. Manual file export/import is enabled below.
+        </span>
+      </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <main class="main-content">
+      <!-- GBA Bezel & Screen Stage -->
+      <section class="gba-chassis" id="gba-chassis">
+        <!-- Top Shoulder Buttons Visual -->
+        <div class="chassis-shoulders">
+          <div class="bumper-pill left" id="v-btn-q" title="L Shoulder (Key Q)">
+            <span class="bumper-key">Q</span>
+            <span class="bumper-label">L</span>
+          </div>
+          <div class="chassis-top-logo">
+            <span class="logo-accent">WIDE SCREEN</span>
+            <span class="power-led" id="power-led" title="Power Indicator"></span>
+          </div>
+          <div class="bumper-pill right" id="v-btn-e" title="R Shoulder (Key E)">
+            <span class="bumper-label">R</span>
+            <span class="bumper-key">E</span>
+          </div>
+        </div>
+
+        <!-- Glass Screen Frame -->
+        <div class="screen-frame" id="screen-frame">
+          <div class="canvas-wrapper">
+            <!-- Native 240x160 GBA Canvas -->
+            <canvas id="gba-canvas" width="240" height="160" tabindex="0"></canvas>
+
+            <!-- Drag & Drop / Initial Welcome Overlay -->
+            <div class="drop-overlay" id="drop-overlay">
+              <div class="drop-modal">
+                <div class="cartridge-icon">
+                  <svg viewBox="0 0 48 48" width="56" height="56" fill="none">
+                    <rect x="8" y="10" width="32" height="34" rx="4" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="2"/>
+                    <path d="M14 10V6h20v4" stroke="currentColor" stroke-width="2"/>
+                    <rect x="14" y="18" width="20" height="18" rx="2" fill="currentColor" fill-opacity="0.25"/>
+                    <line x1="16" y1="40" x2="32" y2="40" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <h3>Drop your GBA ROM here</h3>
+                <p>Supports legally-owned <code>.gba</code> and <code>.zip</code> files</p>
+                <div class="drop-actions">
+                  <button type="button" id="browse-rom-btn" class="btn btn-primary">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                      <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                    </svg>
+                    Choose ROM File
+                  </button>
+                  <button type="button" id="prompt-save-folder-btn" class="btn btn-secondary">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                      <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                    </svg>
+                    Choose Save Folder
+                  </button>
+                </div>
+                <div class="drop-footer">
+                  <span>⚡ Header integrity verified before boot</span>
+                  <span>•</span>
+                  <span>💾 Direct disk saves via File System Access</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pause Overlay -->
+            <div class="pause-overlay hidden" id="pause-overlay">
+              <div class="pause-badge">
+                <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor">
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+                <span>EMULATION PAUSED</span>
+                <small>Click screen or press Pause to resume</small>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Screen Title -->
+          <div class="screen-brand">
+            <span class="brand-retro">Nintendo</span>
+            <span class="brand-model">GAME BOY ADVANCE</span>
+          </div>
+        </div>
+
+        <!-- Controls Action Strip -->
+        <div class="control-strip">
+          <div class="strip-section left-actions">
+            <!-- Load ROM Button -->
+            <input type="file" id="rom-file-input" accept=".gba,.bin,.zip" hidden>
+            <button id="load-rom-btn" class="btn btn-accent" title="Select and boot a .gba ROM">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/>
+              </svg>
+              Load ROM
+            </button>
+
+            <!-- Set Save Folder Button -->
+            <button id="set-folder-btn" class="btn btn-secondary" title="Choose local directory for .sav and .state files">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+              </svg>
+              Save Folder
+            </button>
+          </div>
+
+          <!-- Save State & Slot Controls -->
+          <div class="strip-section state-actions">
+            <div class="slot-selector" title="Select Save State Slot">
+              <span class="slot-label">Slot:</span>
+              <div class="slot-pills">
+                <button class="slot-pill active" data-slot="1">1</button>
+                <button class="slot-pill" data-slot="2">2</button>
+                <button class="slot-pill" data-slot="3">3</button>
+              </div>
+            </div>
+
+            <button id="save-state-btn" class="btn btn-action" title="Save snapshot to current slot in local folder">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                <path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/>
+              </svg>
+              Save State
+            </button>
+
+            <button id="load-state-btn" class="btn btn-action" title="Restore snapshot from current slot in local folder">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+              </svg>
+              Load State
+            </button>
+          </div>
+
+          <div class="strip-section right-actions">
+            <!-- Reset Button -->
+            <button id="reset-btn" class="btn btn-ghost" title="Reset current game">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+              </svg>
+              Reset
+            </button>
+
+            <!-- Pause / Resume Button -->
+            <button id="pause-btn" class="btn btn-ghost" title="Pause or Resume emulation">
+              <svg id="pause-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+              </svg>
+              <svg id="resume-icon" class="hidden" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+              <span id="pause-btn-label">Pause</span>
+            </button>
+
+            <!-- Fullscreen Button -->
+            <button id="fullscreen-btn" class="btn btn-ghost icon-only" title="Toggle Fullscreen">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Active Game Metadata & Status Bar -->
+      <section class="game-meta-bar" id="game-meta-bar">
+        <div class="meta-item">
+          <span class="meta-label">GAME TITLE:</span>
+          <span class="meta-value" id="meta-game-title">None</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">CODE:</span>
+          <span class="meta-value font-mono" id="meta-game-code">----</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">ROM SIZE:</span>
+          <span class="meta-value font-mono" id="meta-rom-size">0.0 MB</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">BATTERY SAVE:</span>
+          <span class="meta-value font-mono" id="meta-save-status">Idle</span>
+        </div>
+      </section>
+
+      <!-- Interactive Keyboard Controller HUD (Visual Feedback) -->
+      <section class="controller-visualizer">
+        <div class="visualizer-header">
+          <h4>KEYBOARD CONTROLS (HARD-MAPPED)</h4>
+          <span class="visualizer-sub">Hold keys on your keyboard to play • visualizer illuminates on input</span>
+        </div>
+
+        <div class="controller-grid">
+          <!-- D-Pad Left -->
+          <div class="controller-panel dpad-panel">
+            <span class="panel-label">DIRECTIONAL PAD</span>
+            <div class="dpad-cross">
+              <div class="dpad-btn up" id="v-btn-w" data-key="w">
+                <span class="key-cap">W</span>
+                <span class="dir-symbol">▲</span>
+              </div>
+              <div class="dpad-row">
+                <div class="dpad-btn left" id="v-btn-a" data-key="a">
+                  <span class="key-cap">A</span>
+                  <span class="dir-symbol">◀</span>
+                </div>
+                <div class="dpad-center"></div>
+                <div class="dpad-btn right" id="v-btn-d" data-key="d">
+                  <span class="key-cap">D</span>
+                  <span class="dir-symbol">▶</span>
+                </div>
+              </div>
+              <div class="dpad-btn down" id="v-btn-s" data-key="s">
+                <span class="key-cap">S</span>
+                <span class="dir-symbol">▼</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- System Buttons Center -->
+          <div class="controller-panel system-panel">
+            <span class="panel-label">SYSTEM</span>
+            <div class="system-buttons">
+              <div class="pill-btn-wrap">
+                <div class="system-pill" id="v-btn-c" data-key="c">
+                  <span class="key-cap">C</span>
+                </div>
+                <span class="system-text">SELECT</span>
+              </div>
+              <div class="pill-btn-wrap">
+                <div class="system-pill" id="v-btn-v" data-key="v">
+                  <span class="key-cap">V</span>
+                </div>
+                <span class="system-text">START</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Buttons Right -->
+          <div class="controller-panel action-panel">
+            <span class="panel-label">ACTION BUTTONS</span>
+            <div class="action-buttons">
+              <div class="action-btn-wrap b-wrap">
+                <div class="action-round btn-b" id="v-btn-k" data-key="k">
+                  <span class="btn-letter">B</span>
+                  <span class="key-hint">K</span>
+                </div>
+              </div>
+              <div class="action-btn-wrap a-wrap">
+                <div class="action-round btn-a" id="v-btn-j" data-key="j">
+                  <span class="btn-letter">A</span>
+                  <span class="key-hint">J</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Fallback Manual Saves Section (for Firefox or Manual Backup) -->
+      <section class="manual-saves-panel" id="manual-saves-panel">
+        <div class="manual-saves-header">
+          <h5>MANUAL SAVE FILE MANAGEMENT</h5>
+          <span class="panel-caption">Export or import raw <code>.sav</code> battery saves and <code>.state</code> snapshots directly</span>
+        </div>
+        <div class="manual-buttons">
+          <button id="manual-export-sram-btn" class="btn btn-small" title="Download current battery save (.sav)">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+            </svg>
+            Export .SAV File
+          </button>
+          <label class="btn btn-small file-btn-label" title="Upload an existing .sav file into the running game">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+            </svg>
+            Import .SAV File
+            <input type="file" id="manual-import-sram-input" accept=".sav,.bin" hidden>
+          </label>
+          <button id="manual-export-state-btn" class="btn btn-small" title="Download save state snapshot for current slot">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+            </svg>
+            Export State File
+          </button>
+          <label class="btn btn-small file-btn-label" title="Upload a save state file into the running game">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/>
+            </svg>
+            Import State File
+            <input type="file" id="manual-import-state-input" accept=".state*,.bin" hidden>
+          </label>
+        </div>
+      </section>
+    </main>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+  </div>
+
+  <!-- Main Application Script (ESM) -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

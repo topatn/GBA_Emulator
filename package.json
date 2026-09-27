@@ -1,0 +1,22 @@
+{
+  "name": "pokeadvance-gba-emulator",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Browser-based Game Boy Advance emulator powered by mGBA WebAssembly core with local folder save system",
+  "main": "app.js",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js 3000"
+  },
+  "keywords": [
+    "gba",
+    "game-boy-advance",
+    "emulator",
+    "wasm",
+    "webassembly",
+    "mgba",
+    "pokemon"
+  ],
+  "author": "Antigravity IDE",
+  "license": "MPL-2.0"
+}
