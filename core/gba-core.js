@@ -115,6 +115,77 @@ export function validateGbaRom(bytes) {
  * GbaEmulatorCore manages the mGBA WASM instance, frame running,
  * canvas rendering, input handling, and save/load operations.
  */
+// GBA memory map constants for cheat patching
+// The WASM emulator maps GBA address space at a fixed offset in its heap.
+// EWRAM: 0x02000000..0x0203FFFF (256 KB)
+// IWRAM: 0x03000000..0x03007FFF (32 KB)
+// I/O:   0x04000000..0x040003FE
+// We compute the JS heap offset using the raw module's memory layout.
+
+/**
+ * Parses a GameShark / Action Replay cheat code string into a list of
+ * { address, value, size } patch operations.
+ *
+ * Supported formats:
+ *  - GameShark v1 (GBA): XXXXXXXX YYYY  (32-bit address, 16-bit value)
+ *  - GameShark v3 / AR v3: 0AAAAAAA VVVVVVVV (various sub-types by prefix nibble)
+ *  - 8-bit patch: lines starting with 0x00..0x0F / C4..C7, address + 2-hex value
+ *
+ * Returns null entries for unrecognised lines.
+ * @param {string} codeText
+ * @returns {Array<{address: number, value: number, size: 1|2|4}>}
+ */
+export function parseCheatCodes(codeText) {
+  const patches = [];
+  const lines = codeText.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    // Strip comments
+    const clean = line.replace(/;.*$/, '').replace(/\/\/.*$/, '').trim();
+    if (!clean) continue;
+
+    // Allow spaces or dashes in the middle
+    const parts = clean.split(/[\s\-]+/);
+    if (parts.length < 2) continue;
+
+    const addrHex = parts[0].replace(/^0x/i, '');
+    const valHex  = parts[1].replace(/^0x/i, '');
+
+    if (!/^[0-9a-fA-F]{6,8}$/.test(addrHex)) continue;
+    if (!/^[0-9a-fA-F]{2,8}$/.test(valHex))  continue;
+
+    const rawAddr = parseInt(addrHex, 16);
+    const rawVal  = parseInt(valHex,  16);
+
+    // Decode by upper nibble / length
+    const typeNibble = (rawAddr >>> 28) & 0xF;
+
+    if (addrHex.length === 8) {
+      // Action Replay v3 / GameShark v3-style decoding
+      const addr = rawAddr & 0x0FFFFFFF;
+      if (typeNibble === 0x0 || typeNibble === 0x1) {
+        // 32-bit write
+        patches.push({ address: addr, value: rawVal, size: 4 });
+      } else if (typeNibble === 0x2 || typeNibble === 0x3) {
+        // 16-bit write
+        patches.push({ address: addr, value: rawVal & 0xFFFF, size: 2 });
+      } else if (typeNibble === 0x8 || typeNibble === 0x9 ||
+                 typeNibble === 0xC || typeNibble === 0xD) {
+        // 8-bit write
+        patches.push({ address: addr, value: rawVal & 0xFF, size: 1 });
+      } else {
+        // Fallback: treat value width by hex length
+        const sz = valHex.length <= 2 ? 1 : valHex.length <= 4 ? 2 : 4;
+        patches.push({ address: addr, value: rawVal, size: sz });
+      }
+    } else if (addrHex.length === 6) {
+      // Old GameShark v1 (6-char address) — always 16-bit writes
+      patches.push({ address: rawAddr, value: rawVal & 0xFFFF, size: 2 });
+    }
+  }
+  return patches;
+}
+
 export class GbaEmulatorCore {
   constructor(canvas, options = {}) {
     if (!canvas) throw new Error('A canvas element is required to initialize GbaEmulatorCore.');
@@ -136,6 +207,14 @@ export class GbaEmulatorCore {
     this.isPaused = false;
     this.isMuted = false;
     this.currentFps = 0;
+
+    // Speed control
+    this._speedMultiplier = 1.0;
+    this._speedIntervalId = null;
+
+    // Cheat engine
+    this._cheats = [];           // Array<{address,value,size,enabled,label}>
+    this._cheatIntervalId = null;
 
     // Callbacks
     this.onFpsUpdate = null;
@@ -212,6 +291,11 @@ export class GbaEmulatorCore {
     this.isRunning = true;
     this.isPaused = false;
     this.engine.start();
+
+    // (Re)start cheat application loop
+    this._startCheatLoop();
+    // Reapply speed after ROM reload
+    this._applySpeed();
 
     if (this.onRomLoaded) {
       this.onRomLoaded(validation);
@@ -355,10 +439,220 @@ export class GbaEmulatorCore {
     return this.isMuted;
   }
 
+  // ─── Speed Control ────────────────────────────────────────────────────────
+
+  /**
+   * Sets the emulation speed multiplier.
+   * 0.25 = quarter speed, 0.5 = half, 1.0 = normal, 2.0 = 2×, 4.0 = 4×
+   * @param {number} multiplier
+   */
+  setSpeed(multiplier) {
+    this._speedMultiplier = Math.max(0.25, Math.min(4.0, multiplier));
+    this._applySpeed();
+  }
+
+  /**
+   * Returns the current speed multiplier.
+   * @returns {number}
+   */
+  getSpeed() {
+    return this._speedMultiplier;
+  }
+
+  /**
+   * Wraps the WASM core's _mgbawasm_run_frame so every SDK-driven tick
+   * runs the correct number of emulated frames:
+   *   >1× → run_frame is called N times total (N-1 extras after the real call)
+   *   <1× → run_frame is skipped every M-1 out of M calls (frame-drop slow-down)
+   *   1×  → unwrap / restore the original function
+   *
+   * This approach is zero-interference with the SDK's audio-clocked pacing
+   * because drainAudio() and renderFrame() still fire at the same rate —
+   * only the number of emulated frames per render tick changes.
+   * @private
+   */
+  _applySpeed() {
+    // Always clear the old speed interval (kept for cleanup compatibility)
+    if (this._speedIntervalId !== null) {
+      clearInterval(this._speedIntervalId);
+      this._speedIntervalId = null;
+    }
+
+    const mod = this.engine?.getRawModule?.();
+    if (!mod) return; // no engine yet – will be applied again after loadRom
+
+    // Restore the original run_frame first (idempotent)
+    if (mod.__origRunFrame) {
+      mod._mgbawasm_run_frame = mod.__origRunFrame;
+      delete mod.__origRunFrame;
+    }
+
+    const mult = this._speedMultiplier;
+    if (Math.abs(mult - 1.0) < 0.01) return; // 1× – nothing to wrap
+
+    // Save the original
+    mod.__origRunFrame = mod._mgbawasm_run_frame.bind(mod);
+
+    if (mult > 1.0) {
+      // Fast-forward: run the frame N times per SDK tick.
+      // Integer multipliers (2, 4) are exact; fractional ones round.
+      const extra = Math.round(mult) - 1; // extra calls beyond the first
+      mod._mgbawasm_run_frame = () => {
+        mod.__origRunFrame();
+        for (let i = 0; i < extra; i++) mod.__origRunFrame();
+      };
+    } else {
+      // Slow-down (0.25×, 0.5×): skip frames.
+      // skipEvery = how many calls to skip for every real call.
+      // 0.5× → skip 1, run 1 → every other frame runs → 30fps
+      // 0.25×→ skip 3, run 1 → every 4th frame runs → 15fps
+      const ratio   = Math.round(1 / mult); // e.g. 2 for 0.5×, 4 for 0.25×
+      let   counter = 0;
+      mod._mgbawasm_run_frame = () => {
+        counter = (counter + 1) % ratio;
+        if (counter === 0) mod.__origRunFrame();
+      };
+    }
+  }
+
+  // ─── Cheat Engine ─────────────────────────────────────────────────────────
+
+  /**
+   * Replaces the active cheat list.
+   * Each entry: { label: string, code: string, enabled: boolean }
+   * @param {Array<{label: string, code: string, enabled: boolean}>} cheatList
+   */
+  setCheats(cheatList) {
+    this._cheats = (cheatList || []).map(c => ({
+      label:   c.label   || 'Unnamed',
+      code:    c.code    || '',
+      enabled: c.enabled !== false,
+      patches: parseCheatCodes(c.code || ''),
+    }));
+  }
+
+  /**
+   * Returns a copy of the current cheat list.
+   * @returns {Array<{label: string, code: string, enabled: boolean}>}
+   */
+  getCheats() {
+    return this._cheats.map(c => ({ label: c.label, code: c.code, enabled: c.enabled }));
+  }
+
+  /**
+   * Adds or updates a single cheat entry by label.
+   * @param {string} label
+   * @param {string} code
+   * @param {boolean} [enabled=true]
+   */
+  addCheat(label, code, enabled = true) {
+    const existing = this._cheats.findIndex(c => c.label === label);
+    const entry = { label, code, enabled, patches: parseCheatCodes(code) };
+    if (existing >= 0) {
+      this._cheats[existing] = entry;
+    } else {
+      this._cheats.push(entry);
+    }
+  }
+
+  /**
+   * Removes a cheat by label.
+   * @param {string} label
+   */
+  removeCheat(label) {
+    this._cheats = this._cheats.filter(c => c.label !== label);
+  }
+
+  /**
+   * Enables or disables a cheat by label.
+   * @param {string} label
+   * @param {boolean} enabled
+   */
+  toggleCheat(label, enabled) {
+    const c = this._cheats.find(e => e.label === label);
+    if (c) c.enabled = enabled;
+  }
+
+  /**
+   * Clears all loaded cheats.
+   */
+  clearCheats() {
+    this._cheats = [];
+  }
+
+  /**
+   * Internal: starts the cheat application loop that writes patches to WASM memory.
+   * GBA address space is mapped inside the WASM heap. The offset of GBA address
+   * 0x00000000 within mod.HEAPU8 is obtained via _mgbawasm_video_ptr heuristic:
+   * we locate VRAM at GBA addr 0x06000000 and back-calculate the base.
+   * @private
+   */
+  _startCheatLoop() {
+    if (this._cheatIntervalId !== null) {
+      clearInterval(this._cheatIntervalId);
+      this._cheatIntervalId = null;
+    }
+
+    this._cheatIntervalId = setInterval(() => {
+      if (!this.isRunning || this.isPaused || this._cheats.length === 0) return;
+      const mod = this.engine?.getRawModule?.();
+      if (!mod || !mod.HEAPU8 || !mod.HEAPU16 || !mod.HEAPU32) return;
+
+      // Locate the GBA memory base in JS heap.
+      // _mgbawasm_video_ptr() returns the WASM pointer to VRAM (GBA: 0x06000000).
+      let gbaBase = this._gbaMemBase;
+      if (gbaBase === undefined) {
+        try {
+          const vramPtr = mod._mgbawasm_video_ptr();
+          // VRAM is at GBA address 0x06000000, so base = ptr - 0x06000000
+          gbaBase = vramPtr - 0x06000000;
+          this._gbaMemBase = gbaBase;
+        } catch (e) {
+          return; // not ready yet
+        }
+      }
+
+      for (const cheat of this._cheats) {
+        if (!cheat.enabled || !cheat.patches.length) continue;
+        for (const patch of cheat.patches) {
+          try {
+            const heapOffset = gbaBase + patch.address;
+            if (heapOffset < 0 || heapOffset + patch.size > mod.HEAPU8.length) continue;
+            if (patch.size === 1) {
+              mod.HEAPU8[heapOffset] = patch.value & 0xFF;
+            } else if (patch.size === 2) {
+              mod.HEAPU16[heapOffset >> 1] = patch.value & 0xFFFF;
+            } else {
+              mod.HEAPU32[heapOffset >> 2] = patch.value >>> 0;
+            }
+          } catch (e) {
+            // Ignore out-of-bounds patches silently
+          }
+        }
+      }
+    }, 16); // ~60 Hz application rate
+  }
+
+  // ─── Cleanup ──────────────────────────────────────────────────────────────
+
   /**
    * Shuts down and cleans up the core
    */
   destroy() {
+    if (this._speedIntervalId !== null) {
+      clearInterval(this._speedIntervalId);
+      this._speedIntervalId = null;
+    }
+    if (this._cheatIntervalId !== null) {
+      clearInterval(this._cheatIntervalId);
+      this._cheatIntervalId = null;
+    }
+    // Restore wrapped run_frame before destroying engine
+    const mod = this.engine?.getRawModule?.();
+    if (mod && mod.__origRunFrame) {
+      mod._mgbawasm_run_frame = mod.__origRunFrame;
+      delete mod.__origRunFrame;
+    }
     if (this.engine) {
       try {
         this.engine.destroy();
@@ -369,6 +663,7 @@ export class GbaEmulatorCore {
     }
     this.isRunning = false;
     this.isPaused = false;
+    this._gbaMemBase = undefined;
     this.currentRomBytes = null;
     this.currentRomInfo = null;
   }

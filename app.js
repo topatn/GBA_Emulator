@@ -3,7 +3,7 @@
  * Integrates mGBA WebAssembly core, File System Access saves, and hard-mapped controls.
  */
 
-import { GbaEmulatorCore, GBA_KEY, validateGbaRom } from './core/gba-core.js';
+import { GbaEmulatorCore, GBA_KEY, validateGbaRom, parseCheatCodes } from './core/gba-core.js';
 import { InputManager } from './input.js';
 import {
   isFileSystemAccessSupported,
@@ -89,6 +89,13 @@ let currentRomBaseName = '';
 let activeSlot = 1;
 let lastSramHash = 0;
 let autoSaveIntervalId = null;
+
+// Speed state
+const SPEED_STEPS = [0.25, 0.5, 1.0, 2.0, 4.0];
+let currentSpeedIndex = 2; // starts at 1.0×
+
+// Cheat state  (array of { label, code, enabled })
+let cheatList = [];
 
 /**
  * Displays a toast notification
@@ -586,6 +593,157 @@ function setupEventListeners() {
 
   // Ensure clicking the canvas restores focus
   canvas.addEventListener('click', () => canvas.focus());
+
+  // ── Speed Control ─────────────────────────────────────────────────────────
+  const speedDownBtn  = document.getElementById('speed-down-btn');
+  const speedUpBtn    = document.getElementById('speed-up-btn');
+  const speedDisplay  = document.getElementById('speed-display');
+
+  function applySpeed() {
+    const mult = SPEED_STEPS[currentSpeedIndex];
+    if (speedDisplay) speedDisplay.textContent = `${mult}×`;
+    if (speedDownBtn) speedDownBtn.disabled = currentSpeedIndex <= 0;
+    if (speedUpBtn)   speedUpBtn.disabled   = currentSpeedIndex >= SPEED_STEPS.length - 1;
+    if (core) {
+      core.setSpeed(mult);
+      const label = mult === 1.0 ? 'Normal speed' : mult < 1 ? `Slow motion ${mult}×` : `Fast-forward ${mult}×`;
+      showToast(label, 'info', 1200);
+    }
+  }
+
+  if (speedDownBtn) {
+    speedDownBtn.addEventListener('click', () => {
+      if (currentSpeedIndex > 0) { currentSpeedIndex--; applySpeed(); }
+    });
+  }
+  if (speedUpBtn) {
+    speedUpBtn.addEventListener('click', () => {
+      if (currentSpeedIndex < SPEED_STEPS.length - 1) { currentSpeedIndex++; applySpeed(); }
+    });
+  }
+  // Keyboard shortcut: Tab = speed up, Shift+Tab = speed down (while not in inputs)
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.code === 'BracketRight' && !e.shiftKey) {
+      e.preventDefault();
+      if (currentSpeedIndex < SPEED_STEPS.length - 1) { currentSpeedIndex++; applySpeed(); }
+    } else if (e.code === 'BracketLeft' && !e.shiftKey) {
+      e.preventDefault();
+      if (currentSpeedIndex > 0) { currentSpeedIndex--; applySpeed(); }
+    }
+  });
+
+  // ── Cheat Engine UI ───────────────────────────────────────────────────────
+  const cheatToggleBtn = document.getElementById('cheat-panel-toggle-btn');
+  const cheatPanel     = document.getElementById('cheat-panel');
+  const cheatLabelInput = document.getElementById('cheat-label-input');
+  const cheatCodeInput  = document.getElementById('cheat-code-input');
+  const cheatAddBtn     = document.getElementById('cheat-add-btn');
+  const cheatList_el    = document.getElementById('cheat-list');
+  const cheatClearAllBtn = document.getElementById('cheat-clear-all-btn');
+
+  if (cheatToggleBtn && cheatPanel) {
+    cheatToggleBtn.addEventListener('click', () => {
+      const isNowHidden = cheatPanel.classList.toggle('hidden');
+      cheatToggleBtn.classList.toggle('active', !isNowHidden);
+      if (!isNowHidden) {
+        // Scroll the panel into view smoothly after the CSS display kicks in
+        requestAnimationFrame(() => {
+          cheatPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+      }
+    });
+  }
+
+  function renderCheatList() {
+    if (!cheatList_el) return;
+    cheatList_el.innerHTML = '';
+    if (cheatList.length === 0) {
+      cheatList_el.innerHTML = '<li class="cheat-empty">No cheats loaded.</li>';
+      return;
+    }
+    cheatList.forEach((cheat, idx) => {
+      const li = document.createElement('li');
+      li.className = 'cheat-entry' + (cheat.enabled ? ' enabled' : '');
+      li.innerHTML = `
+        <label class="cheat-toggle" title="Enable/Disable">
+          <input type="checkbox" class="cheat-check" data-idx="${idx}" ${cheat.enabled ? 'checked' : ''}>
+          <span class="cheat-name">${cheat.label}</span>
+        </label>
+        <code class="cheat-code-preview">${cheat.code.split('\n')[0].trim()}</code>
+        <button class="cheat-remove-btn" data-idx="${idx}" title="Remove cheat">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>`;
+      cheatList_el.appendChild(li);
+    });
+
+    // Bind checkbox toggles
+    cheatList_el.querySelectorAll('.cheat-check').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const i = parseInt(cb.dataset.idx, 10);
+        cheatList[i].enabled = cb.checked;
+        syncCheatsToCore();
+        renderCheatList();
+      });
+    });
+    // Bind remove buttons
+    cheatList_el.querySelectorAll('.cheat-remove-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = parseInt(btn.dataset.idx, 10);
+        cheatList.splice(i, 1);
+        syncCheatsToCore();
+        renderCheatList();
+        showToast('Cheat removed.', 'info', 1200);
+      });
+    });
+  }
+
+  function syncCheatsToCore() {
+    if (core) core.setCheats(cheatList);
+  }
+
+  if (cheatAddBtn) {
+    cheatAddBtn.addEventListener('click', () => {
+      const label = cheatLabelInput?.value.trim() || `Cheat ${cheatList.length + 1}`;
+      const code  = cheatCodeInput?.value.trim()  || '';
+      if (!code) { showToast('Please enter a cheat code.', 'error', 2000); return; }
+
+      // Validate: try parsing it
+      const patches = parseCheatCodes(code);
+      if (patches.length === 0) {
+        showToast('Could not parse any valid codes. Use format: XXXXXXXX YYYY', 'error', 3500);
+        return;
+      }
+
+      // Check for duplicate label
+      const dupIdx = cheatList.findIndex(c => c.label === label);
+      if (dupIdx >= 0) {
+        cheatList[dupIdx] = { label, code, enabled: true };
+        showToast(`Updated cheat "${label}" (${patches.length} patch${patches.length > 1 ? 'es' : ''})`, 'success');
+      } else {
+        cheatList.push({ label, code, enabled: true });
+        showToast(`Added cheat "${label}" (${patches.length} patch${patches.length > 1 ? 'es' : ''})`, 'success');
+      }
+
+      syncCheatsToCore();
+      renderCheatList();
+      if (cheatLabelInput) cheatLabelInput.value = '';
+      if (cheatCodeInput)  cheatCodeInput.value  = '';
+    });
+  }
+
+  if (cheatClearAllBtn) {
+    cheatClearAllBtn.addEventListener('click', () => {
+      cheatList = [];
+      syncCheatsToCore();
+      renderCheatList();
+      showToast('All cheats cleared.', 'info', 1500);
+    });
+  }
+
+  // Initialize display
+  renderCheatList();
+  applySpeed();
 }
 
 // Start application once DOM is loaded
