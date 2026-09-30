@@ -401,7 +401,7 @@
           <textarea
             id="cheat-code-input"
             class="cheat-textarea"
-            placeholder="Enter code(s), one per line&#10;Example: 82005274 0044&#10;         82005276 000A"
+            placeholder="Enter code(s), one per line&#10;Example: 02001234 0064&#10;         02001236 000A"
             rows="3"
             spellcheck="false"
           ></textarea>
@@ -413,10 +413,12 @@
 
         <!-- Cheat format hint -->
         <div class="cheat-format-hint">
-          <strong>Supported formats:</strong>
-          GameShark: <code>XXXXXXXX YYYY</code> &nbsp;|
-          Action Replay v3: <code>0AAAAAAA VVVVVVVV</code> &nbsp;|
-          Multiple lines = multiple patches per cheat
+          <strong>Format:</strong>
+          <code>ADDRESS VALUE</code> per line, e.g. <code>02001234 0064</code>.
+          The value width picks the write size (2 digits&nbsp;=&nbsp;8&#8209;bit,
+          4&nbsp;=&nbsp;16&#8209;bit, 8&nbsp;=&nbsp;32&#8209;bit); add a third
+          token to override it (e.g. <code>02001234 0064 8</code>).
+          EWRAM <code>02xxxxxx</code> and IWRAM <code>03xxxxxx</code> are supported.
         </div>
 
         <!-- Active Cheat List -->

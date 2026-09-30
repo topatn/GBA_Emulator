@@ -3,7 +3,7 @@
  * Integrates mGBA WebAssembly core, File System Access saves, and hard-mapped controls.
  */
 
-import { GbaEmulatorCore, GBA_KEY, validateGbaRom, parseCheatCodes } from './core/gba-core.js';
+import { GbaEmulatorCore, GBA_KEY, validateGbaRom, parseCheatCodes, cheatRegionFor } from './core/gba-core.js';
 import { InputManager } from './input.js';
 import {
   isFileSystemAccessSupported,
@@ -145,6 +145,12 @@ function initApp() {
   // Attach FPS updates
   core.onFpsUpdate = (fps) => {
     fpsCounter.textContent = `${fps.toFixed(1)} FPS`;
+  };
+
+  // Surface cheat-engine problems. The engine locates the emulated EWRAM/IWRAM
+  // lazily, so failures only show up once a patch is actually applied.
+  core.onCheatChange = (cheatError) => {
+    if (cheatError) showToast(cheatError, 'error', 5000);
   };
 
   // Attach Input Manager
@@ -711,24 +717,36 @@ function setupEventListeners() {
       // Validate: try parsing it
       const patches = parseCheatCodes(code);
       if (patches.length === 0) {
-        showToast('Could not parse any valid codes. Use format: XXXXXXXX YYYY', 'error', 3500);
+        showToast('Could not parse any valid codes. Use format: ADDRESS VALUE, e.g. 02001234 0064', 'error', 4000);
+        return;
+      }
+
+      const patchable = patches.filter(p => cheatRegionFor(p.address) !== null);
+      if (patchable.length === 0) {
+        showToast('None of these addresses are in EWRAM (02xxxxxx) or IWRAM (03xxxxxx), which are the only regions cheats can write to.', 'error', 5000);
         return;
       }
 
       // Check for duplicate label
       const dupIdx = cheatList.findIndex(c => c.label === label);
+      const verb = dupIdx >= 0 ? 'Updated' : 'Added';
       if (dupIdx >= 0) {
         cheatList[dupIdx] = { label, code, enabled: true };
-        showToast(`Updated cheat "${label}" (${patches.length} patch${patches.length > 1 ? 'es' : ''})`, 'success');
       } else {
         cheatList.push({ label, code, enabled: true });
-        showToast(`Added cheat "${label}" (${patches.length} patch${patches.length > 1 ? 'es' : ''})`, 'success');
       }
 
       syncCheatsToCore();
       renderCheatList();
       if (cheatLabelInput) cheatLabelInput.value = '';
       if (cheatCodeInput)  cheatCodeInput.value  = '';
+
+      const skipped = patches.length - patchable.length;
+      if (skipped > 0) {
+        showToast(`${verb} "${label}" — ${skipped} of ${patches.length} writes target unsupported regions and will be ignored.`, 'info', 4500);
+      } else {
+        showToast(`${verb} cheat "${label}" (${patches.length} patch${patches.length > 1 ? 'es' : ''})`, 'success');
+      }
     });
   }
 
