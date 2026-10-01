@@ -4,6 +4,7 @@
  */
 
 import { GbaEmulatorCore, GBA_KEY, validateGbaRom, parseCheatCodeList, describeCheatOp, cheatRegionFor } from './core/gba-core.js';
+import { extractRom } from './core/mgba.zip.js';
 import { InputManager } from './input.js';
 import {
   isFileSystemAccessSupported,
@@ -315,7 +316,24 @@ async function handleRomFile(file) {
 
   try {
     const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
+    let bytes = new Uint8Array(arrayBuffer);
+    let displayName = file.name;
+
+    // Cartridge dumps are usually shared zipped. The mGBA SDK knows how to
+    // unpack them, but header validation happens before the SDK is involved,
+    // so the archive has to be opened here or a .zip is rejected as a bad ROM.
+    try {
+      const extracted = await extractRom(bytes, ['.gba', '.gb', '.gbc', '.sgb']);
+      if (extracted !== bytes && extracted.bytes !== bytes) {
+        bytes = extracted.bytes;
+        // Name the save after the ROM inside the archive where we can see it.
+        if (extracted.name) displayName = extracted.name;
+        showToast(`Extracted "${extracted.name || 'ROM'}" from the archive.`, 'info', 2500);
+      }
+    } catch (zipErr) {
+      showToast(`Could not read the archive: ${zipErr.message}`, 'error', 5000);
+      return;
+    }
 
     // Header & size validation check
     const validation = validateGbaRom(bytes);
@@ -324,10 +342,10 @@ async function handleRomFile(file) {
       return;
     }
 
-    currentRomBaseName = getRomBaseName(file.name);
+    currentRomBaseName = getRomBaseName(displayName);
 
     // Boot into mGBA
-    await core.loadRom(bytes, file.name);
+    await core.loadRom(bytes, displayName);
 
     // Hide welcome drop overlay
     dropOverlay.classList.add('hidden');
@@ -336,7 +354,8 @@ async function handleRomFile(file) {
     // Update game metadata
     metaGameTitle.textContent = validation.title;
     metaGameCode.textContent = validation.gameCode;
-    metaRomSize.textContent = `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+    // Size of the cartridge itself, not of a wrapper archive around it.
+    metaRomSize.textContent = `${(bytes.length / (1024 * 1024)).toFixed(1)} MB`;
     metaSaveStatus.textContent = 'Active';
 
     showToast(`Booted: ${validation.title} [${validation.gameCode}]`, 'success', 4000);
