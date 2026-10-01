@@ -115,94 +115,17 @@ export function validateGbaRom(bytes) {
  * GbaEmulatorCore manages the mGBA WASM instance, frame running,
  * canvas rendering, input handling, and save/load operations.
  */
-// ── GBA address space, as the cheat engine needs to see it ────────────────
-// EWRAM is 256 KB mirrored across 0x02000000-0x02FFFFFF, IWRAM is 32 KB
-// mirrored across 0x03000000-0x03FFFFFF. Masking with the region size turns
-// any address a code list happens to use back into a real offset.
-const EWRAM_BASE = 0x02000000;
-const EWRAM_SIZE = 0x40000;
-const IWRAM_BASE = 0x03000000;
-const IWRAM_SIZE = 0x8000;
-const EWRAM_MIRROR_END = 0x03000000;   // 0x02000000..0x02FFFFFF
-const IWRAM_MIRROR_END = 0x04000000;   // 0x03000000..0x03FFFFFF
-const EWRAM_MASK = EWRAM_SIZE - 1;
-const IWRAM_MASK = IWRAM_SIZE - 1;
+// --- GBA address space and cheat code formats live in core/cheats.js ---
+// Re-exported here so existing importers of gba-core.js keep working.
+import {
+  parseCheatCodes, parseCheatCodeList, describeCheatOp, cheatRegionFor,
+  EWRAM_BASE, EWRAM_SIZE, IWRAM_BASE, IWRAM_SIZE, EWRAM_MASK, IWRAM_MASK,
+} from './cheats.js';
+export {
+  parseCheatCodes, parseCheatCodeList, describeCheatOp, cheatRegionFor,
+  EWRAM_BASE, EWRAM_SIZE, IWRAM_BASE, IWRAM_SIZE, EWRAM_MASK, IWRAM_MASK,
+};
 
-/**
- * Classifies a GBA address for cheat purposes.
- * @param {number} address
- * @returns {'ewram'|'iwram'|null} null when the region is not RAM we can patch
- */
-export function cheatRegionFor(address) {
-  if (address >= EWRAM_BASE && address < EWRAM_MIRROR_END) return 'ewram';
-  if (address >= IWRAM_BASE && address < IWRAM_MIRROR_END) return 'iwram';
-  return null;
-}
-
-/**
- * Parses a GameShark / Action Replay cheat code list into { address, value, size }
- * patch operations against the GBA address space.
- *
- * Accepted per line (blank lines and `;` / `//` comments are ignored):
- *
- *   ADDRESS VALUE [BITS]
- *     ADDRESS  6-8 hex digits, optionally 0x-prefixed. A GBA address such as
- *              02001234, or a bare offset such as 0001234 / 1234.
- *     VALUE    2, 4 or 8 hex digits. The width picks the write size:
- *              2 digits -> 8-bit, 4 -> 16-bit, 8 -> 32-bit.
- *     BITS     optional explicit 8 / 16 / 32 override.
- *
- * Multiple lines become multiple patches, applied in order. Multi-line
- * master-code/handler scripts are parsed as independent writes, which covers
- * the "freeze this address" codes that make up most GBA code lists.
- *
- * @param {string} codeText
- * @returns {Array<{address: number, value: number, size: 1|2|4}>}
- */
-export function parseCheatCodes(codeText) {
-  const patches = [];
-  if (typeof codeText !== 'string') return patches;
-
-  for (const rawLine of codeText.split(/[\r\n]+/)) {
-    const clean = rawLine.replace(/[;#].*$/, '').replace(/\/\/.*$/, '').trim();
-    if (!clean) continue;
-
-    const parts = clean.split(/[\s,]+/).filter(Boolean);
-    if (parts.length < 2) continue;
-
-    const addrHex = parts[0].replace(/^0x/i, '');
-    const valHex  = parts[1].replace(/^0x/i, '');
-    if (!/^[0-9a-f]{1,8}$/i.test(addrHex)) continue;
-    if (!/^[0-9a-f]{1,8}$/i.test(valHex))  continue;
-
-    // 7 or 8 digits is a GBA address (0x02000000 and up need more than 24 bits,
-    // so this masks off sign extension only). 6 or fewer is a bare EWRAM/IWRAM
-    // offset, which code lists use interchangeably with the full address.
-    let address;
-    if (addrHex.length >= 7) {
-      address = parseInt(addrHex, 16) & 0x0fffffff;
-    } else {
-      const offset = parseInt(addrHex, 16);
-      address = offset < IWRAM_SIZE ? IWRAM_BASE + offset : EWRAM_BASE + offset;
-    }
-
-    const value = parseInt(valHex, 16);
-    const hint = parts[2] ? parseInt(parts[2], 10) : NaN;
-    let size;
-    if (hint === 8 || hint === 16 || hint === 32) {
-      size = hint / 8;
-    } else {
-      size = valHex.length <= 2 ? 1 : valHex.length <= 4 ? 2 : 4;
-    }
-
-    patches.push({
-      address,
-      value: value >>> 0,
-      size,
-    });
-  }
-  return patches;
-}
 
 export class GbaEmulatorCore {
   constructor(canvas, options = {}) {
@@ -464,11 +387,11 @@ export class GbaEmulatorCore {
     return this.isMuted;
   }
 
-  // ─── Speed Control ────────────────────────────────────────────────────────
+  // --- Speed Control ---
 
   /**
    * Sets the emulation speed multiplier.
-   * 0.25 = quarter speed, 0.5 = half, 1.0 = normal, 2.0 = 2×, 4.0 = 4×
+   * 0.25 = quarter speed, 0.5 = half, 1.0 = normal, 2.0 = 2x, 4.0 = 4x
    * @param {number} multiplier
    */
   setSpeed(multiplier) {
@@ -488,16 +411,16 @@ export class GbaEmulatorCore {
    * Rebuilds the wrapper around the WASM core's _mgbawasm_run_frame so that each
    * emulated frame is preceded by a cheat-patch pass and the right number of
    * frames runs per SDK tick:
-   *   >1× → run_frame is called N times total (N-1 extras after the real call)
-   *   <1× → run_frame is skipped every M-1 out of M calls (frame-drop slow-down)
-   *   1×  → one frame per tick, still patched
+   *   >1x  -> run_frame is called N times total (N-1 extras after the real call)
+   *   <1x  -> run_frame is skipped every M-1 out of M calls (frame-drop slow-down)
+   *   1x   -> one frame per tick, still patched
    *
    * Patches have to be written inside this hook rather than from a timer: the
    * emulator is only reachable between frames, so a timer would either land
    * mid-frame or miss the frame entirely.
    *
    * This approach is zero-interference with the SDK's audio-clocked pacing
-   * because drainAudio() and renderFrame() still fire at the same rate —
+   * because drainAudio() and renderFrame() still fire at the same rate -
    * only the number of emulated frames per render tick changes.
    * @private
    */
@@ -509,7 +432,7 @@ export class GbaEmulatorCore {
     }
 
     const mod = this.engine?.getRawModule?.();
-    if (!mod) return; // no engine yet – will be applied again after loadRom
+    if (!mod) return; // no engine yet - will be applied again after loadRom
 
     // Remember the pristine run_frame once, then always rebuild from it so
     // repeated calls cannot stack wrappers on top of each other.
@@ -526,7 +449,7 @@ export class GbaEmulatorCore {
 
     const mult = this._speedMultiplier;
     if (Math.abs(mult - 1.0) < 0.01) {
-      // 1× – one patched frame per tick
+      // 1x  -> one patched frame per tick
       mod._mgbawasm_run_frame = step;
       return;
     }
@@ -540,11 +463,11 @@ export class GbaEmulatorCore {
         for (let i = 0; i < extra; i++) step();
       };
     } else {
-      // Slow-down (0.25×, 0.5×): skip frames.
+      // Slow-down (0.25x, 0.5x): skip frames.
       // skipEvery = how many calls to skip for every real call.
-      // 0.5× → skip 1, run 1 → every other frame runs → 30fps
-      // 0.25×→ skip 3, run 1 → every 4th frame runs → 15fps
-      const ratio   = Math.round(1 / mult); // e.g. 2 for 0.5×, 4 for 0.25×
+      // 0.5x  -> skip 1, run 1  -> every other frame runs  -> 30fps
+      // 0.25x -> skip 3, run 1  -> every 4th frame runs  -> 15fps
+      const ratio   = Math.round(1 / mult); // e.g. 2 for 0.5 , 4 for 0.25 
       let   counter = 0;
       mod._mgbawasm_run_frame = () => {
         counter = (counter + 1) % ratio;
@@ -553,7 +476,7 @@ export class GbaEmulatorCore {
     }
   }
 
-  // ─── Cheat Engine ─────────────────────────────────────────────────────────
+  // --- Cheat Engine -----------------------------------------------------------
   //
   // The WASM build of mGBA exports no read/write accessor for GBA RAM, so the
   // cheat engine talks to the emulator's linear memory directly. EWRAM and
@@ -569,14 +492,112 @@ export class GbaEmulatorCore {
    * @param {Array<{label: string, code: string, enabled: boolean}>} cheatList
    */
   setCheats(cheatList) {
-    const next = (cheatList || []).map(c => ({
-      label:   c.label   || 'Unnamed',
-      code:    c.code    || '',
-      enabled: c.enabled !== false,
-      patches: parseCheatCodes(c.code || ''),
-    }));
+    const next = (cheatList || []).map(c => {
+      const parsed = parseCheatCodeList(c.code || '');
+      return {
+        label:   c.label   || 'Unnamed',
+        code:    c.code    || '',
+        enabled: c.enabled !== false,
+        patches: parsed.ops,
+        format:  parsed.format,
+        notes:   parsed.notes,
+      };
+    });
     this._restoreDisabledCheats(next);
     this._cheats = next;
+  }
+
+  /**
+   * A per-cheat summary of how its code list was understood: which format it
+   * was read as, and anything that was skipped.
+   * @returns {Array<{label: string, format: string, notes: string[]}>}
+   */
+  getCheatReports() {
+    return this._cheats.map(c => ({ label: c.label, format: c.format, notes: c.notes || [] }));
+  }
+
+  // --- RAM search -----------------------------------------------------------
+  //
+  // Cheat lists for homebrew titles go stale: Pokémon Unbound has been rebuilt
+  // many times and a game's variables move between revisions, which is why a
+  // code copied from a list can point somewhere meaningless. Finding the real
+  // address is more reliable than trusting a list, and EWRAM/IWRAM are only
+  // 288 KB in total so a full scan is cheap.
+
+  /**
+   * Makes sure the emulated EWRAM/IWRAM have been located, without needing a
+   * cheat to be active. Safe to call at any time.
+   * @returns {{ewram: number, iwram: number}|null}
+   */
+  locateCheatMemory() {
+    if (this._memMap) return this._memMap;
+    return this._locateMemoryMap();
+  }
+
+  /**
+   * Reads a value out of emulated RAM.
+   * @param {number} address GBA address
+   * @param {number} width bytes (1, 2 or 4)
+   * @returns {number|null}
+   */
+  readCheatValue(address, width) {
+    const mod = this.engine?.getRawModule?.();
+    const map = this._memMap;
+    if (!mod || !mod.HEAPU8 || !map) return null;
+    const offset = this._resolveAddress(map, address);
+    if (offset === null || offset + width > mod.HEAPU8.length) return null;
+    let v = 0;
+    for (let i = 0; i < width; i++) v |= mod.HEAPU8[offset + i] << (8 * i);
+    return v >>> 0;
+  }
+
+  /**
+   * Finds every RAM cell holding `value`.
+   *
+   * Pass the previous round's result as `previous` to narrow down: the game
+   * changes a real counter (spending money) while noise does not, so repeating
+   * the search after a change leaves only the address that tracks it.
+   *
+   * @param {object} options
+   * @param {number} options.value value to look for
+   * @param {number} [options.width=2] bytes per cell (1, 2 or 4)
+   * @param {number[]|null} [options.previous] addresses from the last search
+   * @returns {{addresses: number[], width: number, regions: string[]}|null}
+   */
+  searchCheatMemory({ value, width = 2, previous = null } = {}) {
+    const mod = this.engine?.getRawModule?.();
+    const map = this.locateCheatMemory();
+    if (!mod || !mod.HEAPU8) return null;
+    if (width !== 1 && width !== 2 && width !== 4) return null;
+
+    const target = (value >>> 0) & (width === 4 ? 0xFFFFFFFF : (1 << (width * 8)) - 1);
+    const heap = mod.HEAPU8;
+    const regions = [];
+    if (map && map.ewram !== null && map.ewram !== undefined) {
+      regions.push({ heapBase: map.ewram, gbaBase: EWRAM_BASE, size: EWRAM_SIZE, name: 'EWRAM' });
+    }
+    if (map && map.iwram !== null && map.iwram !== undefined) {
+      regions.push({ heapBase: map.iwram, gbaBase: IWRAM_BASE, size: IWRAM_SIZE, name: 'IWRAM' });
+    }
+    if (!regions.length) return null;
+
+    const keep = previous ? new Set(previous) : null;
+    const addresses = [];
+    for (const region of regions) {
+      for (let off = 0; off + width <= region.size; off += width) {
+        let v = 0;
+        for (let i = 0; i < width; i++) v |= heap[region.heapBase + off + i] << (8 * i);
+        if ((v >>> 0) !== target) continue;
+        const gba = region.gbaBase + off;
+        if (keep && !keep.has(gba)) continue;
+        addresses.push(gba);
+      }
+    }
+    return {
+      addresses,
+      width,
+      regions: regions.map(r => r.name),
+    };
   }
 
   /**
@@ -717,7 +738,7 @@ export class GbaEmulatorCore {
    * Proves a candidate heap address really is the RAM bank at `blobOffset`, by
    * planting a marker and asking the core to serialise itself. Content matching
    * alone is not enough: the save-state buffer we just filled is itself a copy
-   * of the blob, so it matches too — but a write there is never reflected back
+   * of the blob, so it matches too   but a write there is never reflected back
    * into the RAM section, which is exactly what this test distinguishes.
    *
    * @private
@@ -856,8 +877,13 @@ export class GbaEmulatorCore {
       return;
     }
 
+    // Only ops that write memory need restoring; conditionals and inert lines
+    // have no bytes of their own.
+    const WRITING_OPS = new Set(['write', 'and', 'or', 'add']);
     const stillActive = new Set(
-      next.filter(c => c.enabled).flatMap(c => c.patches.map(p => `${p.address}:${p.size}`))
+      next
+        .filter(c => c.enabled)
+        .flatMap(c => c.patches.filter(p => WRITING_OPS.has(p.op)).map(p => `${p.address}:${p.size}`))
     );
     const kept = [];
     for (const record of this._cheatRestores) {
@@ -877,13 +903,17 @@ export class GbaEmulatorCore {
    * frame, immediately before the core runs it, so the game sees the value for
    * the whole frame instead of racing a timer against the CPU.
    *
+   * Ops are interpreted in list order, which is what gives GameShark and
+   * CodeBreaker conditionals their meaning: an `if` gates the writes that
+   * follow it, exactly as the cheat device's code handler would.
+   *
    * @private
    */
   _applyCheatPatches() {
     if (!this._cheats.length) return;
     const mod = this.engine?.getRawModule?.();
     // Only HEAPU8 is assumed to exist. Emscripten does not always publish the
-    // wider views (this build has no HEAPU16/HEAP32), and every write here can
+    // wider views (this build has no HEAPU16/HEAP32), and every access here can
     // be expressed as bytes anyway.
     if (!mod || !mod.HEAPU8) return;
 
@@ -894,24 +924,72 @@ export class GbaEmulatorCore {
     const heapEnd = heap.length;
     const liveKeys = new Set();
 
+    const readValue = (offset, size) => {
+      let v = 0;
+      for (let i = 0; i < size; i++) v |= heap[offset + i] << (8 * i);
+      return v >>> 0;
+    };
+    const writeValue = (op, value) => {
+      const key = `${op.address}:${op.size}`;
+      const offset = this._resolveAddress(map, op.address);
+      if (offset === null || offset + op.size > heapEnd) return;
+      liveKeys.add(key);
+      if (!this._cheatRestores.some(r => r.key === key)) {
+        this._cheatRestores.push({
+          key,
+          offset,
+          bytes: Array.from(heap.subarray(offset, offset + op.size)),
+        });
+      }
+      for (let i = 0; i < op.size; i++) {
+        heap[offset + i] = (value >>> (8 * i)) & 0xFF;
+      }
+    };
+
     for (const cheat of this._cheats) {
       if (!cheat.enabled) continue;
-      for (const patch of cheat.patches) {
-        const offset = this._resolveAddress(map, patch.address);
-        if (offset === null || offset + patch.size > heapEnd) continue;
 
-        const key = `${patch.address}:${patch.size}`;
-        liveKeys.add(key);
-        if (!this._cheatRestores.some(r => r.key === key)) {
-          this._cheatRestores.push({
-            key,
-            offset,
-            bytes: Array.from(heap.subarray(offset, offset + patch.size)),
-          });
+      // Number of upcoming write ops to suppress when a condition fails.
+      let skip = 0;
+      for (const op of cheat.patches) {
+        if (op.op === 'if') {
+          const offset = this._resolveAddress(map, op.address);
+          if (offset === null || offset + op.size > heapEnd) { skip = op.count; continue; }
+          const current = readValue(offset, op.size);
+          const target = op.value >>> 0;
+          let pass;
+          switch (op.compare) {
+            case 'eq': pass = current === target; break;
+            case 'ne': pass = current !== target; break;
+            case 'gt': pass = current > target; break;
+            case 'lt': pass = current < target; break;
+            case 'le': pass = current <= target; break;
+            case 'ge': pass = current >= target; break;
+            default: pass = false;
+          }
+          skip = pass ? 0 : op.count;
+          continue;
         }
-        for (let i = 0; i < patch.size; i++) {
-          heap[offset + i] = (patch.value >>> (8 * i)) & 0xFF;
+
+        if (op.op === 'write') {
+          if (skip > 0) { skip--; continue; }
+          writeValue(op, op.value >>> 0);
+          continue;
         }
+
+        // Read-modify-write forms: AND / OR / ADD against live memory.
+        if (op.op === 'and' || op.op === 'or' || op.op === 'add') {
+          if (skip > 0) { skip--; continue; }
+          const offset = this._resolveAddress(map, op.address);
+          if (offset === null || offset + op.size > heapEnd) continue;
+          const current = readValue(offset, op.size);
+          const operand = op.value >>> 0;
+          const next = op.op === 'and' ? (current & operand)
+            : op.op === 'or' ? (current | operand)
+              : (current + operand);
+          writeValue(op, next >>> 0);
+        }
+        // 'skip' (master/enable lines) and 'unsupported' types are inert.
       }
     }
 
@@ -920,7 +998,7 @@ export class GbaEmulatorCore {
     }
   }
 
-  // ─── Cleanup ──────────────────────────────────────────────────────────────
+  // --- Cleanup ---------------------------------------------------------------
 
   /**
    * Shuts down and cleans up the core

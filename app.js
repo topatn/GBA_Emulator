@@ -3,7 +3,7 @@
  * Integrates mGBA WebAssembly core, File System Access saves, and hard-mapped controls.
  */
 
-import { GbaEmulatorCore, GBA_KEY, validateGbaRom, parseCheatCodes, cheatRegionFor } from './core/gba-core.js';
+import { GbaEmulatorCore, GBA_KEY, validateGbaRom, parseCheatCodeList, describeCheatOp, cheatRegionFor } from './core/gba-core.js';
 import { InputManager } from './input.js';
 import {
   isFileSystemAccessSupported,
@@ -671,15 +671,45 @@ function setupEventListeners() {
     cheatList.forEach((cheat, idx) => {
       const li = document.createElement('li');
       li.className = 'cheat-entry' + (cheat.enabled ? ' enabled' : '');
-      li.innerHTML = `
-        <label class="cheat-toggle" title="Enable/Disable">
-          <input type="checkbox" class="cheat-check" data-idx="${idx}" ${cheat.enabled ? 'checked' : ''}>
-          <span class="cheat-name">${cheat.label}</span>
-        </label>
-        <code class="cheat-code-preview">${cheat.code.split('\n')[0].trim()}</code>
-        <button class="cheat-remove-btn" data-idx="${idx}" title="Remove cheat">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>`;
+
+      // Show what the code actually does, not the ciphertext, so a list that
+      // was decrypted can be confirmed at a glance.
+      const decoded = parseCheatCodeList(cheat.code);
+      const FORMAT_NAME = {
+        raw: 'raw', gameshark: 'GameShark (encrypted)', codebreaker: 'CodeBreaker (encrypted)',
+      };
+      const meaningful = decoded.ops.filter(op => op.op !== 'skip');
+      const firstLine = meaningful.length
+        ? describeCheatOp(meaningful[0])
+        : 'no writable codes';
+      const extra = meaningful.length > 1 ? ` (+${meaningful.length - 1} more)` : '';
+      const format = FORMAT_NAME[decoded.format] || decoded.format;
+
+      const preview = document.createElement('code');
+      preview.className = 'cheat-code-preview';
+      preview.textContent = `${format}: ${firstLine}${extra}`;
+      preview.title = decoded.ops.map(describeCheatOp).join('\n');
+
+      const label = document.createElement('label');
+      label.className = 'cheat-toggle';
+      label.title = 'Enable/Disable';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'cheat-check';
+      box.dataset.idx = String(idx);
+      box.checked = cheat.enabled;
+      const name = document.createElement('span');
+      name.className = 'cheat-name';
+      name.textContent = cheat.label;
+      label.append(box, name);
+
+      const remove = document.createElement('button');
+      remove.className = 'cheat-remove-btn';
+      remove.dataset.idx = String(idx);
+      remove.title = 'Remove cheat';
+      remove.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+
+      li.append(label, preview, remove);
       cheatList_el.appendChild(li);
     });
 
@@ -714,16 +744,18 @@ function setupEventListeners() {
       const code  = cheatCodeInput?.value.trim()  || '';
       if (!code) { showToast('Please enter a cheat code.', 'error', 2000); return; }
 
-      // Validate: try parsing it
-      const patches = parseCheatCodes(code);
-      if (patches.length === 0) {
-        showToast('Could not parse any valid codes. Use format: ADDRESS VALUE, e.g. 02001234 0064', 'error', 4000);
+      // Works out whether this is a raw, GameShark or CodeBreaker list.
+      const parsed = parseCheatCodeList(code);
+      if (parsed.ops.length === 0) {
+        showToast('Could not read any codes. Expected ADDRESS VALUE per line, e.g. 02001234 0064', 'error', 4000);
         return;
       }
 
-      const patchable = patches.filter(p => cheatRegionFor(p.address) !== null);
-      if (patchable.length === 0) {
-        showToast('None of these addresses are in EWRAM (02xxxxxx) or IWRAM (03xxxxxx), which are the only regions cheats can write to.', 'error', 5000);
+      const WRITING = new Set(['write', 'and', 'or', 'add']);
+      const actionable = parsed.ops.filter(op =>
+        WRITING.has(op.op) || (op.op === 'if' && cheatRegionFor(op.address) !== null));
+      if (actionable.length === 0) {
+        showToast('None of these codes write to EWRAM (02xxxxxx) or IWRAM (03xxxxxx), the only regions cheats can change.', 'error', 5000);
         return;
       }
 
@@ -741,11 +773,15 @@ function setupEventListeners() {
       if (cheatLabelInput) cheatLabelInput.value = '';
       if (cheatCodeInput)  cheatCodeInput.value  = '';
 
-      const skipped = patches.length - patchable.length;
-      if (skipped > 0) {
-        showToast(`${verb} "${label}" — ${skipped} of ${patches.length} writes target unsupported regions and will be ignored.`, 'info', 4500);
+      const FORMAT_NAME = {
+        raw: 'raw', gameshark: 'GameShark (encrypted)', codebreaker: 'CodeBreaker (encrypted)',
+      };
+      const format = FORMAT_NAME[parsed.format] || parsed.format;
+      const head = `${verb} "${label}" - ${actionable.length} code${actionable.length > 1 ? 's' : ''} (${format})`;
+      if (parsed.notes.length) {
+        showToast(`${head}. ${parsed.notes.join(' ')}`, 'info', 6000);
       } else {
-        showToast(`${verb} cheat "${label}" (${patches.length} patch${patches.length > 1 ? 'es' : ''})`, 'success');
+        showToast(head, 'success');
       }
     });
   }
@@ -758,6 +794,123 @@ function setupEventListeners() {
       showToast('All cheats cleared.', 'info', 1500);
     });
   }
+
+  // ── Address Finder ───────────────────────────────────────────────────────
+  //
+  // Cheat lists for homebrew games like Pokémon Unbound go stale as the game is
+  // rebuilt, so a code from a list can point at an address that no longer holds
+  // anything. This finds the address by value instead: search RAM for what the
+  // screen shows, then change that value in game and search again, which drops
+  // everything that merely happened to contain the same number.
+  const finderValue   = document.getElementById('finder-value');
+  const finderWidth   = document.getElementById('finder-width');
+  const finderSearch  = document.getElementById('finder-search-btn');
+  const finderReset   = document.getElementById('finder-reset-btn');
+  const finderResult  = document.getElementById('finder-result');
+  const finderList    = document.getElementById('finder-list');
+  const finderMax     = document.getElementById('finder-max');
+  const finderMakeRow = document.getElementById('finder-make-row');
+  const finderCreate  = document.getElementById('finder-create-btn');
+
+  let finderCandidates = null;   // null = first search, otherwise narrow
+  let finderRounds = 0;
+  let finderWidthUsed = 2;
+
+  const parseValue = (text) => {
+    const raw = (text || '').trim();
+    if (!raw) return NaN;
+    if (/^0x/i.test(raw)) return parseInt(raw.slice(2), 16) >>> 0;
+    return Number(raw) >>> 0;
+  };
+
+  function renderFinder() {
+    if (!finderList || !finderResult) return;
+    finderList.innerHTML = '';
+    if (finderCandidates === null) {
+      finderResult.textContent = 'No search yet.';
+      if (finderMakeRow) finderMakeRow.hidden = true;
+      return;
+    }
+    const n = finderCandidates.length;
+    const round = finderRounds;
+    finderResult.textContent = n === 0
+      ? `Round ${round}: no match. Check the value and the byte width (a 16-bit number will not match at 4 bytes).`
+      : n === 1
+        ? `Round ${round}: 1 address left.`
+        : `Round ${round}: ${n} matches. Change the value in game and search again to narrow it down.`;
+
+    finderCandidates.slice(0, 40).forEach((addr) => {
+      const li = document.createElement('li');
+      li.className = 'cheat-finder-item';
+      const live = core ? core.readCheatValue(addr, finderWidthUsed) : null;
+      li.textContent = `${addr.toString(16).toUpperCase().padStart(8, '0')}`
+        + (live === null ? '' : `   now ${live}`);
+      finderList.appendChild(li);
+    });
+    if (n > 40) {
+      const li = document.createElement('li');
+      li.className = 'cheat-finder-more';
+      li.textContent = `...and ${n - 40} more`;
+      finderList.appendChild(li);
+    }
+    if (finderMakeRow) finderMakeRow.hidden = n !== 1;
+  }
+
+  if (finderSearch) {
+    finderSearch.addEventListener('click', () => {
+      if (!core) { showToast('Load a game first.', 'error', 2500); return; }
+      if (!core.isRunning) { showToast('Load a game first.', 'error', 2500); return; }
+      const value = parseValue(finderValue?.value);
+      if (Number.isNaN(value)) { showToast('Enter the value shown on screen.', 'error', 2500); return; }
+      const width = Number(finderWidth?.value || 2);
+      // Changing the width invalidates earlier rounds.
+      if (width !== finderWidthUsed) finderCandidates = null;
+      finderWidthUsed = width;
+
+      const result = core.searchCheatMemory({ value, width, previous: finderCandidates });
+      if (!result) {
+        showToast('Could not read the game\'s memory. Let the game run a moment, then try again.', 'error', 4500);
+        return;
+      }
+      finderCandidates = result.addresses;
+      finderRounds++;
+      renderFinder();
+      if (finderRounds > 30) { finderCandidates = null; finderRounds = 0; }
+    });
+  }
+
+  if (finderReset) {
+    finderReset.addEventListener('click', () => {
+      finderCandidates = null;
+      finderRounds = 0;
+      renderFinder();
+    });
+  }
+
+  if (finderCreate) {
+    finderCreate.addEventListener('click', () => {
+      if (!finderCandidates || finderCandidates.length !== 1) return;
+      const address = finderCandidates[0];
+      const max = parseValue(finderMax?.value);
+      if (Number.isNaN(max)) { showToast('Enter the value to freeze at.', 'error', 2500); return; }
+      const width = finderWidthUsed;
+      const hex = address.toString(16).toUpperCase().padStart(8, '0');
+      const digits = width * 2;
+      const valueHex = (max >>> 0).toString(16).toUpperCase().padStart(digits, '0');
+      const label = 'Max value @ ' + hex;
+
+      const existing = cheatList.findIndex(c => c.label === label);
+      const entry = { label, code: `${hex} ${valueHex}`, enabled: true };
+      if (existing >= 0) cheatList[existing] = entry;
+      else cheatList.push(entry);
+
+      syncCheatsToCore();
+      renderCheatList();
+      showToast(`Created "${label}" - ${width * 8}-bit write of ${max}. If the value does not stick, the field may be mirrored; try the neighbouring address.`, 'success', 6000);
+    });
+  }
+
+  renderFinder();
 
   // Initialize display
   renderCheatList();

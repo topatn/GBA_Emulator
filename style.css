@@ -1292,6 +1292,67 @@ body {
   color: var(--accent-poke-amber);
 }
 
+/* --- Address Finder ------------------------------------------------------- */
+.cheat-finder {
+  margin: 0 0 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.02);
+}
+.cheat-finder-summary {
+  cursor: pointer;
+  padding: 9px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  list-style: none;
+  user-select: none;
+}
+.cheat-finder-summary::-webkit-details-marker { display: none; }
+.cheat-finder-summary::before { content: '\25B8'; margin-right: 7px; color: var(--accent-poke-ruby); }
+.cheat-finder[open] .cheat-finder-summary::before { content: '\25BE'; }
+.cheat-finder-summary:hover { color: var(--text-primary); }
+.cheat-finder-body { padding: 0 12px 12px; }
+.cheat-finder-steps {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+.cheat-finder-steps strong { color: var(--text-dim); }
+.cheat-finder-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+.cheat-finder-label { font-size: 11px; color: var(--text-muted); }
+.cheat-input-narrow { width: 96px; }
+.cheat-finder-btn { padding: 7px 13px; font-size: 12px; }
+.cheat-finder-result {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin-bottom: 7px;
+}
+.cheat-finder-list {
+  list-style: none;
+  margin: 0 0 9px;
+  padding: 7px 9px;
+  max-height: 132px;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.28);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.cheat-finder-list:empty { display: none; }
+.cheat-finder-item { padding: 1px 0; }
+.cheat-finder-more { color: var(--text-muted); opacity: 0.7; font-style: italic; }
+.cheat-finder-make { padding-top: 3px; border-top: 1px solid rgba(255,255,255,0.07); }
+
 /* Cheat list */
 .cheat-list {
   list-style: none;

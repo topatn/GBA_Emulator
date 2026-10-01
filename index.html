@@ -401,7 +401,7 @@
           <textarea
             id="cheat-code-input"
             class="cheat-textarea"
-            placeholder="Enter code(s), one per line&#10;Example: 02001234 0064&#10;         02001236 000A"
+            placeholder="Paste a code list, one per line&#10;GameShark: 02001234 00000064&#10;CodeBreaker: 82001234 0064&#10;Plain: 02001234 0064"
             rows="3"
             spellcheck="false"
           ></textarea>
@@ -413,13 +413,49 @@
 
         <!-- Cheat format hint -->
         <div class="cheat-format-hint">
-          <strong>Format:</strong>
-          <code>ADDRESS VALUE</code> per line, e.g. <code>02001234 0064</code>.
-          The value width picks the write size (2 digits&nbsp;=&nbsp;8&#8209;bit,
-          4&nbsp;=&nbsp;16&#8209;bit, 8&nbsp;=&nbsp;32&#8209;bit); add a third
-          token to override it (e.g. <code>02001234 0064 8</code>).
-          EWRAM <code>02xxxxxx</code> and IWRAM <code>03xxxxxx</code> are supported.
+          <strong>Accepts</strong> GameShark, CodeBreaker and plain
+          <code>ADDRESS VALUE</code> codes &mdash; paste a whole list, one code
+          per line, encrypted or not; the format is detected automatically.
+          The leading digit of an 8-digit address is the code type, so
+          <code>0xxxxxxx</code>/<code>1xxxxxxx</code>/<code>2xxxxxxx</code>
+          are GameShark 8/16/32-bit writes and <code>3xxxxxxx</code>/<code>8xxxxxxx</code>
+          are CodeBreaker 8/16-bit writes. Only EWRAM <code>02xxxxxx</code> and
+          IWRAM <code>03xxxxxx</code> can be changed. Add a third token
+          (<code>02001234 0064 8</code>) to force a write size.
         </div>
+
+        <!-- Address Finder -->
+        <details class="cheat-finder" id="cheat-finder">
+          <summary class="cheat-finder-summary">Can&apos;t find a working code? Search the game&apos;s RAM</summary>
+          <div class="cheat-finder-body">
+            <p class="cheat-finder-steps">
+              1. Type the value you see on screen, then <strong>Search</strong>.
+              2. Change that value in the game (spend money), type the new value,
+              then <strong>Search again</strong> &mdash; repeat until one address is left.
+            </p>
+            <div class="cheat-finder-row">
+              <label class="cheat-finder-label" for="finder-value">Value on screen</label>
+              <input id="finder-value" type="text" class="cheat-input cheat-input-narrow"
+                     inputmode="numeric" placeholder="9999" value="9999">
+              <label class="cheat-finder-label" for="finder-width">Bytes</label>
+              <select id="finder-width" class="cheat-input cheat-input-narrow">
+                <option value="1">1</option>
+                <option value="2" selected>2</option>
+                <option value="4">4</option>
+              </select>
+              <button id="finder-search-btn" class="btn btn-accent cheat-finder-btn">Search</button>
+              <button id="finder-reset-btn" class="btn btn-small btn-ghost">Reset</button>
+            </div>
+            <div class="cheat-finder-result" id="finder-result">No search yet.</div>
+            <ul class="cheat-finder-list" id="finder-list"></ul>
+            <div class="cheat-finder-row cheat-finder-make" id="finder-make-row" hidden>
+              <label class="cheat-finder-label" for="finder-max">Set to</label>
+              <input id="finder-max" type="text" class="cheat-input cheat-input-narrow"
+                     inputmode="numeric" value="9999999">
+              <button id="finder-create-btn" class="btn btn-accent cheat-finder-btn">Create freeze code</button>
+            </div>
+          </div>
+        </details>
 
         <!-- Active Cheat List -->
         <ul class="cheat-list" id="cheat-list">
