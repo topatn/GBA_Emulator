@@ -1,2 +1,12 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Never let line-ending normalization touch binary payloads.
+# A corrupted WebAssembly core or ROM makes the emulator fail to boot,
+# so mark these explicitly rather than relying on auto-detection.
+*.wasm binary
+*.gba binary
+*.sav binary
+*.gb  binary
+*.gbc binary
+*.zip binary
