@@ -1,0 +1,32 @@
+# Netlify configuration for PokéAdvance GBA Emulator
+#
+# This is a fully static site: no build step, no dependencies.
+# The mGBA emulator core is a prebuilt WebAssembly module already in core/.
+
+[build]
+  publish = "."
+  command = ""
+
+# The emulator does not require cross-origin isolation (no SharedArrayBuffer),
+# but the WASM core must be served with the correct MIME type for streaming
+# compilation (Emscripten). Netlify serves .wasm as application/wasm natively;
+# this pins it so behaviour is explicit and stable.
+[[headers]]
+  for = "/core/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# The emulator's own JS/CSS/HTML. Long cache for hashed-less static assets would
+# trap users on stale versions, so keep revalidation on.
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Cartridge/ROM files are user-supplied at runtime, not served. Nothing to map.
